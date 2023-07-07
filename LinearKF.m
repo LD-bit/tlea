@@ -1,5 +1,5 @@
 % AUTHOR:   DUBREIL Léa
-% DATE:     08/02/2023 (created) 06/03/2023 (modified)
+% DATE:     08/02/2023 (created) 04/04/2023 (modified)
 % PROJECT:  Master Thesis
 % NAME:     Kalman Filter of a linear observation and evolution model
 % REF:      Samy Labsir, 2020, Méthodes statistiques fondées sur les 
@@ -9,18 +9,15 @@ clear all; close all; clc;
 %% ---------------------------- VARIABLES ZONE ----------------------------
 % DISCRETISATION OF TIME
 T = 0.25;               %[s] sampling period: measure every second
-N = 60*5;               %[s] max duration of measurements
+N = 60*8;               %[s] max duration of measurements
 step = N/T;             %[-] step
-t = 0:T:N*T-T;          % time vector
-nMC = 1e3;              % Monte Carlo number (keep it min 100)
-
-% matrice for uncertainties, order of magnitude
-% uncertainties for speed ~=0.1 m/s and for pos ~=10m
-M = [eye(3) zeros(3);zeros(3) 0.01*eye(3)]; 
+t = 0:T:N*T-T;          %[s] time vector
+nMC = 1e3;              %[-] Monte Carlo number (keep it min 100)
 
 % EVOLUTION MODEL
 % Uncertainties in model
-sigma_vk = 1; % standard deviations
+sigma_vk = 1e1;         %[m/s] Velocity standard deviation
+sigma_pk = 1e-2;        %[m] Position standard deviation
 Fk = [eye(3) T*eye(3);zeros(3) eye(3)]; % transition matrix
 
 % Initial State Vector
@@ -29,27 +26,24 @@ Fk = [eye(3) T*eye(3);zeros(3) eye(3)]; % transition matrix
 x0 = [-3089022.5178; %[m] x
       -3952006.3867; %[m] y
       4687365.0410;  %[m] z
-      2105.6276;     %[m] vx
-      4864.7572;     %[m] vy
-      5469.7445];    %[m] vz
+      2105.6276;     %[m/s] vx
+      4864.7572;     %[m/s] vy
+      5469.7445];    %[m/s] vz
 
 % OBSERVATION MODEL
 % Uncertainties in measures
-sigma_nk = 0.5; % standard deviation
-% observation matrix
-Hk = [eye(3) zeros(3);zeros(3) eye(3)]; % Observing only positions
+sigma_nk    = 1e0;    %[m] standard deviation position
+sigma_nnk   = 1e-1;   %[m/s] standard deviation velocity
+Hk = [eye(3) zeros(3);zeros(3) eye(3)]; % observation matrix
 
 % PARAMETERS SAVED
-x = zeros(6,N,nMC); % true state of x
-z = zeros(6,N,nMC); % measurements z
-xe = zeros(6,N,nMC); % predicted state of xk
-xf = zeros(6,N,nMC); % filtered state xk
+x = zeros(6,1); % true state of x
+z = zeros(6,N); % measurements z
 MeasErr = zeros(N,nMC); % measurement error
-EstErr = zeros(N,nMC); % estimation error
 TrPn = zeros(1,N); % Trace of Pn
 
 %% ------------------------------ MAIN ZONE -------------------------------
-
+disp('[INFO] Kalman Filter: linear case')
 h = waitbar(0,'Please wait...');
 
 % KALMAN FILTER
@@ -58,52 +52,54 @@ for loop = 1:nMC
     waitbar(loop/nMC,h);
 
     % INITIALISATION
-    Rk = sqrt(sigma_nk)*M; % covariance matrix of measurements
-    Qk = sqrt(sigma_vk)*M; % covariance matrix of evaluations
-    Pn = [100*eye(3) zeros(3);
-          zeros(3) 0.1*eye(3)]; % covariance P[n|n]
-
+    Rk = diag([sigma_nk^2*ones(3,1);sigma_nnk^2*ones(3,1)]); % covariance matrix of measurements
+    Qk = diag([sigma_pk^2*ones(3,1);sigma_vk^2*ones(3,1)]); % covariance matrix of evaluations
+    Pn = [1*eye(3) zeros(3);
+          zeros(3) eye(3)]; % covariance P[n|n]
+    
     for k = 1:N
         
         % INITIALISATION: noises for each sampling time
         % noise n_k ~ N(0,Rk)
-        n_k = sqrt(sigma_nk)*reshape([randn(3,1) 0.1*randn(3,1)],6,1); 
+        n_k = chol(Rk)'*randn(6,1); 
         % noise v_k ~ N(0,Qk)
-        v_k = sqrt(sigma_vk)*reshape([randn(3,1) 0.1*randn(3,1)],6,1); 
+        v_k = chol(Qk)'*randn(6,1);
         
         % TRUE STATES
         if k == 1
-            x(:,k,loop) = x0; % initialisation
+            xt = x0; % initialisation
         else
-            x(:,k,loop) = Fk*x(:,k-1,loop) + v_k; % eq. 1.39, true state
+            xt = Fk*xt + v_k; % eq. 1.39, true state
         end
 
         % MEASUREMENT
-        z(:,k,loop) = Hk*x(:,k,loop) + n_k; % eq. 1.40, measurement z[n]
+        z = Hk*xt + n_k; % eq. 1.40, measurement z[n]
 
         % PREDICTION 
         if k == 1
             % initialisation of x[n|n] 
             % NB: it is != of init state (true state):
-            xe(:,k,loop) = x0 + reshape([randn(3,1) 0.1*randn(3,1)],6,1); 
+            x = x0 + reshape([randn(3,1) 0.1*randn(3,1)],6,1); 
+            % ERRORS
+            % norm of the diff for each state between true and filtered
+            MeasErr(k,loop) = norm(x - xt)^2; 
+            TrPn(k) = trace(Pn);
         else 
-            xe(:,k,loop) = Fk*xf(:,k-1,loop);   % eq. 1.41, state estimation x[n+1|n]
+            x = Fk*x;   % eq. 1.41, state estimation x[n+1|n]
+        
+            Pk = Fk*Pn*Fk' + Qk;  % eq. 1.42, covariance estimation P[n+1|n]
+            
+            % CORRECTION
+            Sk = Rk + Hk*Pk*Hk'; % eq. p.37 Update covariance matrix S[n]
+            Kn = Pk*Hk'/Sk; % eq. p.37, Kalman gain K[n]
+            x = x + Kn*(z - Hk*x); % eq. 1.44, state update x[n|n]
+            Pn = (eye(6) - Kn*Hk)*Pk; % eq. 1.43, covariance update P[n|n]
+            
+            % ERRORS
+            % norm of the diff for each state between true and filtered
+            MeasErr(k,loop) = norm(x - xt)^2; 
+            TrPn(k) = trace(Pn);
         end
-        Pk = Fk*Pn*Fk' + Qk;  % eq. 1.42, covariance estimation P[n+1|n]
-        
-        % CORRECTION
-        Sk = Rk + Hk*Pk*Hk'; % eq. p.37 Update covariance matrix S[n]
-        Kn = Pk*Hk'/Sk; % eq. p.37, Kalman gain K[n]
-        xf(:,k,loop) = xe(:,k,loop) + Kn*(z(:,k,loop) - Hk*xe(:,k,loop)); % eq. 1.44, state update x[n|n]
-        Pn = (eye(6) - Kn*Hk)*Pk; % eq. 1.43, covariance update P[n|n]
-        
-        % ERRORS
-        % norm of the diff for each state between true and filtered
-        MeasErr(k,loop) = norm(xf(:,k,loop) - x(:,k,loop))^2; 
-        % norm of the diff for each state between estimated and filtered
-        EstErr(k,loop) = norm(xe(:,k,loop) - xf(:,k,loop))^2;
-        TrPn(k) = trace(Pn);
-
     end % end for KF   
 end % end for of MC runs
 close(h)
@@ -112,17 +108,13 @@ close(h)
 % In order to study the convergence of the KF, the trace of Pn has to 
 % tend towards the value of the MSE for each sampling time
 MeasMSE = (1/nMC)*sum(MeasErr,2); % Mean square error on measurements
-EstMSE = (1/nMC)*sum(EstErr,2); % Mean square error on estimation
 
-% PLOTS
+%% PLOTS
 figure
-plot(t,MeasMSE,'-r',t,TrPn','b')
-xlabel('Time [s]'), ylabel('MSE')
-title('Study of Linear KF convergence')
-legend('Measurement Mean Square Error','Trace of covariance matrix')
-
-% figure
-% plot(t,EstMSE,'-g')
-% xlabel('Time [s]'), ylabel('MSE')
-% title('Study of Linear KF convergence')
-% legend('Estimation Mean Square Error')
+plot(t,MeasMSE,'-sr','Linewidth',2), hold on
+plot(t,TrPn','-.ob','Linewidth',2)
+grid on
+xlabel('Time [s]','Interpreter','latex','fontsize',16)
+ylabel('[-]','Interpreter','latex','fontsize',16)
+title('Convergence of Linear KF','Interpreter','latex','fontsize',16)
+legend('Total $MSE$','$Tr(P_{n})$','Interpreter','latex','fontsize',16)
